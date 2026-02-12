@@ -1,0 +1,56 @@
+project:
+  name: "DensiGrav_Project"
+  crs: "EPSG:6677"
+  gravity_unit: "mGal"
+  length_unit: "m"
+
+paths:
+  data_dir: "data"
+  cache_dir: "cache"
+  results_dir: "results"
+
+inputs:
+  gravity_points:
+    path: "data/gravity_points.csv"
+    value_kind: "bouguer_anomaly"
+    columns:
+      x: "E"
+      y: "N"
+      z: "elev_m"
+      value: "bouguer_mgal"
+      sigma: "sigma_mgal"
+  dem:
+    path: "data/dem.tif"
+    z_unit: "m"
+
+step1_preprocess:
+  bouguer_density_kgm3: 2670.0
+  terrain_correction:
+    enabled: true
+    method: "dem_prism"
+    density_kgm3: 2670.0
+    outer_radius_m: 20000.0
+  regional:
+    enabled: false
+    method: "polynomial"
+    order: 2
+    output: "residual"
+  outputs:
+    points_gpkg: "cache/preprocessed_points.gpkg"
+    grids:
+      enabled: false
+      resolution_m: 250.0
+      cba_grid: "cache/cba.tif"
+      tc_grid: "cache/terrain_correction.tif"
+
+step2_section:
+  enabled: false
+  buffer_width_m: 2000.0
+  sampling_interval_m: 50.0
+  outputs:
+    result_dir: "results/2d/section_A"
+    section_points_gpkg: "section_points.gpkg"
+    figures:
+      - "profile.png"
+      - "fit.png"
+
