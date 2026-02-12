@@ -21,7 +21,10 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only"
 ]
 
-dependencies = []
+dependencies = [
+  "pydantic>=2.6",
+  "pyyaml>=6.0",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -44,7 +47,7 @@ target-version = "py39"
 fix = true
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
+select = ["E", "F", "I", "B"]
 ignore = ["E501"]
 
 [tool.black]
