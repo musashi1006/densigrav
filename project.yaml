@@ -30,13 +30,14 @@ step1_preprocess:
     method: "dem_prism"
     density_kgm3: 2670.0
     outer_radius_m: 20000.0
+    station_epsilon_m: 0.1
   regional:
     enabled: false
     method: "polynomial"
     order: 2
     output: "residual"
   outputs:
-    points_gpkg: "cache/preprocessed_points.gpkg"
+    points_gpkg: "results/points_cba.gpkg"
     grids:
       enabled: false
       resolution_m: 250.0

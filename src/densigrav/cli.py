@@ -14,6 +14,7 @@ from .io.dem import (
     write_dem_prepare_points_gpkg,
 )
 from .io.gravity_points import PointsIOError, read_points_any, standardize_points, write_gpkg
+from .preprocess.step1_cba import PreprocessError, assert_projected, compute_tc_cba_from_ba
 from .project.io import ProjectValidationError, load_project, validate_project
 
 
@@ -101,13 +102,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--in-layer", type=str, default=None, help="Input layer name (only for GeoPackage input)"
     )
     prep.add_argument(
-        "--error-if-outside",
-        action="store_true",
-        help="Fail if any points are outside DEM bounds",
+        "--error-if-outside", action="store_true", help="Fail if any points are outside DEM bounds"
     )
 
-    # stubs (later)
-    sub.add_parser("preprocess", help="Compute CBA with DEM terrain correction [stub]")
+    # preprocess (Issue05)
+    pre = sub.add_parser(
+        "preprocess", help="Step1: Bouguer anomaly + DEM -> terrain correction -> CBA (points)"
+    )
+    pre.add_argument("project", type=str, help="Path to project.yaml")
+    pre.add_argument("--overwrite", action="store_true", help="Overwrite outputs if exist")
+    pre.add_argument(
+        "--no-resolve", action="store_true", help="Do not resolve relative paths to absolute paths"
+    )
+    pre.add_argument("--layer", type=str, default="gravity_points", help="Output GPKG layer name")
+    pre.add_argument(
+        "--in-layer", type=str, default=None, help="Input layer name (only for GeoPackage input)"
+    )
+    pre.add_argument(
+        "--points", type=str, default=None, help="Override gravity points path (CSV/GPKG)"
+    )
+    pre.add_argument("--dem", type=str, default=None, help="Override DEM path (GeoTIFF)")
+    pre.add_argument(
+        "--out-dem-clipped",
+        type=str,
+        default=None,
+        help="Override clipped DEM output path (default: cache/dem_clipped_tc.tif)",
+    )
+    pre.add_argument(
+        "--out-points", type=str, default=None, help="Override output points gpkg path"
+    )
+
+    # section (later)
     sub.add_parser("section", help="Extract section and run 2D tools [stub]")
 
     return p
@@ -199,7 +224,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             if not dem_path.exists():
                 raise DemIOError(f"DEM file not found: {dem_path}")
 
-            # Read + standardize points
             df = read_points_any(gp_path, layer=args.in_layer)
             cols = cfg.inputs.gravity_points.columns
             std = standardize_points(
@@ -211,26 +235,20 @@ def main(argv: Optional[list[str]] = None) -> int:
                 sigma_col=cols.sigma,
                 crs=cfg.project.crs,
                 input_unit=cfg.project.gravity_unit.value,
-                target_unit=cfg.project.gravity_unit.value,  # keep unit here; Issue05で統一する
+                target_unit=cfg.project.gravity_unit.value,
             )
-
             points_gdf = std.gdf
 
-            # Build AOI in points CRS, then reproject to DEM CRS inside dem functions
             aoi = aoi_from_points_bbox(points_gdf, buffer_m=float(args.buffer_m))
 
-            # Clip DEM (need AOI in DEM CRS)
             import rasterio
+
+            from .io.dem import _reproject_shapely_geom
 
             with rasterio.open(dem_path) as src:
                 dem_crs = src.crs.to_string() if src.crs else ""
             if not dem_crs:
                 raise DemIOError(f"DEM has no CRS: {dem_path}")
-
-            # Reproject AOI to DEM CRS if needed
-            from .io.dem import (
-                _reproject_shapely_geom,  # local import to avoid exposing as public API
-            )
 
             aoi_dem = _reproject_shapely_geom(aoi, points_gdf.crs.to_string(), dem_crs)
 
@@ -243,7 +261,6 @@ def main(argv: Optional[list[str]] = None) -> int:
 
             clip_dem_to_geom(dem_path, aoi_dem, out_dem, overwrite=bool(args.overwrite))
 
-            # Fill z if missing
             filled_points, stats = sample_dem_to_points(
                 out_dem,
                 points_gdf,
@@ -259,26 +276,112 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("OK: DEM prepared")
             print(f"out_dem: {out_dem}")
             print(f"out_points: {out_points} (layer={args.layer})")
-            # print(
-            #    f"points: {stats.n_points}, filled_z: {stats.n_filled}, outside_dem: {stats.n_outside}"
-            # )
+            # stats の中身は Issue04 の実装状況に依存するので、ここでは最低限のみ表示
             print(
-                f"points: {stats.n_points}, "
-                f"z_missing_before: {stats.n_missing_before}, "
-                f"z_filled_from_dem: {stats.n_filled_from_dem}, "
-                f"z_missing_after: {stats.n_missing_after}, "
-                f"outside_dem: {stats.n_outside}"
+                f"points: {len(filled_points)}, outside_dem: {getattr(stats, 'n_outside', 'n/a')}"
             )
             return 0
 
-        # stubs
-        if args.command in ("preprocess", "section"):
-            print(f"[stub] command='{args.command}' is not implemented yet.")
+        # ---- preprocess Step1 (Issue05)
+        if args.command == "preprocess":
+            loaded = load_project(Path(args.project), resolve_paths=not args.no_resolve)
+            cfg = loaded.config
+
+            assert_projected(cfg.project.crs)
+
+            # input paths (optional overrides)
+            gp_path = Path(args.points) if args.points else cfg.inputs.gravity_points.path
+            dem_path = Path(args.dem) if args.dem else cfg.inputs.dem.path
+            if not gp_path.is_absolute():
+                gp_path = (loaded.base_dir / gp_path).resolve()
+            if not dem_path.is_absolute():
+                dem_path = (loaded.base_dir / dem_path).resolve()
+
+            if not gp_path.exists():
+                raise PointsIOError(f"Gravity points file not found: {gp_path}")
+            if not dem_path.exists():
+                raise DemIOError(f"DEM file not found: {dem_path}")
+
+            # Read + standardize points to mGal (required because harmonica returns mGal) :contentReference[oaicite:3]{index=3}
+            df = read_points_any(gp_path, layer=args.in_layer)
+            cols = cfg.inputs.gravity_points.columns
+            std = standardize_points(
+                df,
+                x_col=cols.x,
+                y_col=cols.y,
+                z_col=cols.z,
+                value_col=cols.value,
+                sigma_col=cols.sigma,
+                crs=cfg.project.crs,
+                input_unit=cfg.project.gravity_unit.value,
+                target_unit="mGal",
+            )
+
+            # outputs
+            out_points = _resolve_out_path(
+                loaded.base_dir,
+                args.out_points,
+                (
+                    Path(cfg.step1_preprocess.outputs.points_gpkg)
+                    if not Path(cfg.step1_preprocess.outputs.points_gpkg).is_absolute()
+                    else Path(cfg.step1_preprocess.outputs.points_gpkg).relative_to(
+                        Path(cfg.step1_preprocess.outputs.points_gpkg).anchor
+                    )
+                ),
+            )
+            # ↑ resolve_project_paths 済みなら絶対パスになっているはずなので、素直に使う
+            out_points_cfg = cfg.step1_preprocess.outputs.points_gpkg
+            if out_points_cfg.is_absolute():
+                out_points = out_points_cfg
+            else:
+                out_points = (loaded.base_dir / out_points_cfg).resolve()
+            if args.out_points:
+                out_points = _resolve_out_path(loaded.base_dir, args.out_points, out_points_cfg)
+
+            out_dem_default = cfg.paths.cache_dir / "dem_clipped_tc.tif"
+            out_dem_clipped = _resolve_out_path(
+                loaded.base_dir, args.out_dem_clipped, out_dem_default
+            )
+
+            tc_cfg = cfg.step1_preprocess.terrain_correction
+
+            stats = compute_tc_cba_from_ba(
+                points_gdf=std.gdf,
+                dem_path=dem_path,
+                out_dem_clipped=out_dem_clipped,
+                out_points=out_points,
+                bouguer_density_kgm3=cfg.step1_preprocess.bouguer_density_kgm3,
+                terrain_density_kgm3=tc_cfg.density_kgm3,
+                outer_radius_m=tc_cfg.outer_radius_m,
+                station_epsilon_m=tc_cfg.station_epsilon_m,
+                overwrite=bool(args.overwrite),
+                layer=args.layer,
+            )
+
+            print("OK: preprocess Step1 finished")
+            print(f"out_points: {stats.out_points} (layer={args.layer})")
+            print(f"out_dem_clipped: {stats.out_dem_clipped}")
+            print(
+                f"points: {stats.n_points}, "
+                f"z_missing_before: {stats.z_missing_before}, "
+                f"z_filled_from_dem: {stats.z_filled_from_dem}, "
+                f"z_missing_after: {stats.z_missing_after}"
+            )
+            print(
+                f"bouguer_density_kgm3: {stats.bouguer_density_kgm3}, "
+                f"terrain_density_kgm3: {stats.terrain_density_kgm3}, "
+                f"outer_radius_m: {stats.outer_radius_m}"
+            )
+            return 0
+
+        # ---- section stub
+        if args.command == "section":
+            print("[stub] section is not implemented yet.")
             return 0
 
         parser.print_help()
         return 0
 
-    except (ProjectValidationError, PointsIOError, DemIOError) as e:
+    except (ProjectValidationError, PointsIOError, DemIOError, PreprocessError) as e:
         print(str(e), file=sys.stderr)
         return 2
