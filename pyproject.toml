@@ -33,6 +33,13 @@ dev = [
   "black>=24.0",
   "build>=1.0",
 ]
+geo = [
+  "pandas>=2.0",
+  "geopandas>=0.14",
+  "pyogrio>=0.7",
+  "shapely>=2.0",
+  "pyproj>=3.6",
+]
 
 [project.scripts]
 densigrav = "densigrav.cli:main"
