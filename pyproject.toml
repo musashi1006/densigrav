@@ -40,6 +40,10 @@ geo = [
   "shapely>=2.0",
   "pyproj>=3.6",
 ]
+raster = [
+  "numpy>=1.23",
+  "rasterio>=1.3",
+]
 
 [project.scripts]
 densigrav = "densigrav.cli:main"
