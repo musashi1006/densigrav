@@ -79,6 +79,7 @@ class TerrainCorrectionConfig(BaseModel):
     method: str = "dem_prism"
     density_kgm3: float = 2670.0
     outer_radius_m: float = 20000.0
+    station_epsilon_m: float = 0.1
 
 
 class RegionalConfig(BaseModel):
@@ -144,7 +145,7 @@ class ProjectFile(BaseModel):
     paths: PathsConfig = PathsConfig()
     inputs: InputsConfig
 
-    step1_preprocess: Step1PreprocessConfig = Step1PreprocessConfig()
+    step1_preprocess: Step1PreprocessConfig = Field(default_factory=Step1PreprocessConfig)
     step2_section: Step2SectionConfig = Step2SectionConfig()
 
     # 将来拡張用（v0.1は何でも入れてよい“逃げ道”を用意）
