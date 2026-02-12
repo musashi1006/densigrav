@@ -3,8 +3,16 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Optional
 
 from . import __version__
+from .io.dem import (
+    DemIOError,
+    aoi_from_points_bbox,
+    clip_dem_to_geom,
+    sample_dem_to_points,
+    write_dem_prepare_points_gpkg,
+)
 from .io.gravity_points import PointsIOError, read_points_any, standardize_points, write_gpkg
 from .project.io import ProjectValidationError, load_project, validate_project
 
@@ -25,14 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
     val = project_sub.add_parser("validate", help="Validate project YAML")
     val.add_argument("path", type=str, help="Path to project.yaml")
     val.add_argument(
-        "--no-resolve",
-        action="store_true",
-        help="Do not resolve relative paths to absolute paths",
+        "--no-resolve", action="store_true", help="Do not resolve relative paths to absolute paths"
     )
     val.add_argument(
-        "--check-exists",
-        action="store_true",
-        help="Check whether referenced input files exist",
+        "--check-exists", action="store_true", help="Check whether referenced input files exist"
     )
 
     # points (Issue03)
@@ -59,15 +63,47 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ing.add_argument("--overwrite", action="store_true", help="Overwrite output if exists")
     ing.add_argument(
-        "--no-resolve",
-        action="store_true",
-        help="Do not resolve relative paths to absolute paths",
+        "--no-resolve", action="store_true", help="Do not resolve relative paths to absolute paths"
     )
     ing.add_argument(
-        "--in-layer",
+        "--in-layer", type=str, default=None, help="Input layer name (only for GeoPackage input)"
+    )
+
+    # dem (Issue04)
+    dem_p = sub.add_parser("dem", help="DEM utilities")
+    dem_sub = dem_p.add_subparsers(dest="dem_cmd", required=True)
+
+    prep = dem_sub.add_parser(
+        "prepare", help="Clip DEM by AOI and fill point elevations (z) from DEM when missing"
+    )
+    prep.add_argument("project", type=str, help="Path to project.yaml")
+    prep.add_argument(
+        "--buffer-m", type=float, default=5000.0, help="AOI buffer (CRS units, typically meters)"
+    )
+    prep.add_argument(
+        "--out-dem",
         type=str,
         default=None,
-        help="Input layer name (only for GeoPackage input)",
+        help="Output clipped DEM path (default: cache/dem_clipped.tif)",
+    )
+    prep.add_argument(
+        "--out-points",
+        type=str,
+        default=None,
+        help="Output points GPKG path (default: cache/points_with_z.gpkg)",
+    )
+    prep.add_argument("--layer", type=str, default="gravity_points", help="Output GPKG layer name")
+    prep.add_argument("--overwrite", action="store_true", help="Overwrite outputs if they exist")
+    prep.add_argument(
+        "--no-resolve", action="store_true", help="Do not resolve relative paths to absolute paths"
+    )
+    prep.add_argument(
+        "--in-layer", type=str, default=None, help="Input layer name (only for GeoPackage input)"
+    )
+    prep.add_argument(
+        "--error-if-outside",
+        action="store_true",
+        help="Fail if any points are outside DEM bounds",
     )
 
     # stubs (later)
@@ -77,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _resolve_out_path(base_dir: Path, out: str | None, default_rel: Path) -> Path:
+def _resolve_out_path(base_dir: Path, out: Optional[str], default_rel: Path) -> Path:
     if out is None:
         p = base_dir / default_rel
     else:
@@ -87,7 +123,7 @@ def _resolve_out_path(base_dir: Path, out: str | None, default_rel: Path) -> Pat
     return p.resolve()
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
 
@@ -125,9 +161,7 @@ def main(argv: list[str] | None = None) -> int:
             if not gp_path.exists():
                 raise PointsIOError(f"Gravity points file not found: {gp_path}")
 
-            # read raw
             df = read_points_any(gp_path, layer=args.in_layer)
-
             cols = cfg.inputs.gravity_points.columns
             std = standardize_points(
                 df,
@@ -152,6 +186,91 @@ def main(argv: list[str] | None = None) -> int:
             print(f"unit: {std.gravity_unit}")
             return 0
 
+        # ---- dem prepare (Issue04)
+        if args.command == "dem" and args.dem_cmd == "prepare":
+            loaded = load_project(Path(args.project), resolve_paths=not args.no_resolve)
+            cfg = loaded.config
+
+            gp_path = cfg.inputs.gravity_points.path
+            dem_path = cfg.inputs.dem.path
+
+            if not gp_path.exists():
+                raise PointsIOError(f"Gravity points file not found: {gp_path}")
+            if not dem_path.exists():
+                raise DemIOError(f"DEM file not found: {dem_path}")
+
+            # Read + standardize points
+            df = read_points_any(gp_path, layer=args.in_layer)
+            cols = cfg.inputs.gravity_points.columns
+            std = standardize_points(
+                df,
+                x_col=cols.x,
+                y_col=cols.y,
+                z_col=cols.z,
+                value_col=cols.value,
+                sigma_col=cols.sigma,
+                crs=cfg.project.crs,
+                input_unit=cfg.project.gravity_unit.value,
+                target_unit=cfg.project.gravity_unit.value,  # keep unit here; Issue05で統一する
+            )
+
+            points_gdf = std.gdf
+
+            # Build AOI in points CRS, then reproject to DEM CRS inside dem functions
+            aoi = aoi_from_points_bbox(points_gdf, buffer_m=float(args.buffer_m))
+
+            # Clip DEM (need AOI in DEM CRS)
+            import rasterio
+
+            with rasterio.open(dem_path) as src:
+                dem_crs = src.crs.to_string() if src.crs else ""
+            if not dem_crs:
+                raise DemIOError(f"DEM has no CRS: {dem_path}")
+
+            # Reproject AOI to DEM CRS if needed
+            from .io.dem import (
+                _reproject_shapely_geom,  # local import to avoid exposing as public API
+            )
+
+            aoi_dem = _reproject_shapely_geom(aoi, points_gdf.crs.to_string(), dem_crs)
+
+            out_dem = _resolve_out_path(
+                loaded.base_dir, args.out_dem, cfg.paths.cache_dir / "dem_clipped.tif"
+            )
+            out_points = _resolve_out_path(
+                loaded.base_dir, args.out_points, cfg.paths.cache_dir / "points_with_z.gpkg"
+            )
+
+            clip_dem_to_geom(dem_path, aoi_dem, out_dem, overwrite=bool(args.overwrite))
+
+            # Fill z if missing
+            filled_points, stats = sample_dem_to_points(
+                out_dem,
+                points_gdf,
+                z_col="z",
+                fill_only_missing=True,
+                error_if_outside=bool(args.error_if_outside),
+            )
+
+            write_dem_prepare_points_gpkg(
+                filled_points, out_points, layer=args.layer, overwrite=bool(args.overwrite)
+            )
+
+            print("OK: DEM prepared")
+            print(f"out_dem: {out_dem}")
+            print(f"out_points: {out_points} (layer={args.layer})")
+            # print(
+            #    f"points: {stats.n_points}, filled_z: {stats.n_filled}, outside_dem: {stats.n_outside}"
+            # )
+            print(
+                f"points: {stats.n_points}, "
+                f"z_missing_before: {stats.n_missing_before}, "
+                f"z_filled_from_dem: {stats.n_filled_from_dem}, "
+                f"z_missing_after: {stats.n_missing_after}, "
+                f"outside_dem: {stats.n_outside}"
+            )
+            return 0
+
         # stubs
         if args.command in ("preprocess", "section"):
             print(f"[stub] command='{args.command}' is not implemented yet.")
@@ -160,6 +279,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
 
-    except (ProjectValidationError, PointsIOError) as e:
+    except (ProjectValidationError, PointsIOError, DemIOError) as e:
         print(str(e), file=sys.stderr)
         return 2
