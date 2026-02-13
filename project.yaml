@@ -32,7 +32,7 @@ step1_preprocess:
     outer_radius_m: 20000.0
     station_epsilon_m: 0.1
   regional:
-    enabled: false
+    enabled: true
     method: "polynomial"
     order: 2
     output: "residual"
@@ -45,13 +45,11 @@ step1_preprocess:
       tc_grid: "cache/terrain_correction.tif"
 
 step2_section:
-  enabled: false
-  buffer_width_m: 2000.0
-  sampling_interval_m: 50.0
+  enabled: true
+  buffer_width_m: 200.0
+  sampling_interval_m: 100.0
   outputs:
     result_dir: "results/2d/section_A"
     section_points_gpkg: "section_points.gpkg"
-    figures:
-      - "profile.png"
-      - "fit.png"
+    figures: []
 
