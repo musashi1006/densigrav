@@ -14,7 +14,7 @@ from .io.dem import (
     write_dem_prepare_points_gpkg,
 )
 from .io.gravity_points import PointsIOError, read_points_any, standardize_points, write_gpkg
-from .preprocess.step1_cba import PreprocessError, assert_projected, compute_tc_cba_from_ba
+from .preprocess.step1_cba import PreprocessError, compute_tc_cba_from_ba
 from .project.io import ProjectValidationError, load_project, validate_project
 
 
@@ -287,8 +287,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             loaded = load_project(Path(args.project), resolve_paths=not args.no_resolve)
             cfg = loaded.config
 
-            assert_projected(cfg.project.crs)
-
             # input paths (optional overrides)
             gp_path = Path(args.points) if args.points else cfg.inputs.gravity_points.path
             dem_path = Path(args.dem) if args.dem else cfg.inputs.dem.path
@@ -343,7 +341,21 @@ def main(argv: Optional[list[str]] = None) -> int:
                 loaded.base_dir, args.out_dem_clipped, out_dem_default
             )
 
+            grids_cfg = cfg.step1_preprocess.outputs.grids
             tc_cfg = cfg.step1_preprocess.terrain_correction
+            reg_cfg = cfg.step1_preprocess.regional
+
+            # grid outputs (resolve)
+            out_tc_grid = (
+                (loaded.base_dir / grids_cfg.tc_grid).resolve()
+                if not grids_cfg.tc_grid.is_absolute()
+                else grids_cfg.tc_grid
+            )
+            out_cba_grid = (
+                (loaded.base_dir / grids_cfg.cba_grid).resolve()
+                if not grids_cfg.cba_grid.is_absolute()
+                else grids_cfg.cba_grid
+            )
 
             stats = compute_tc_cba_from_ba(
                 points_gdf=std.gdf,
@@ -356,22 +368,30 @@ def main(argv: Optional[list[str]] = None) -> int:
                 station_epsilon_m=tc_cfg.station_epsilon_m,
                 overwrite=bool(args.overwrite),
                 layer=args.layer,
+                # Issue06:
+                regional_enabled=reg_cfg.enabled,
+                regional_order=reg_cfg.order,
+                regional_output=reg_cfg.output,
+                grids_enabled=grids_cfg.enabled,
+                grid_resolution_m=grids_cfg.resolution_m,
+                out_tc_grid=out_tc_grid,
+                out_cba_grid=out_cba_grid,
             )
 
             print("OK: preprocess Step1 finished")
             print(f"out_points: {stats.out_points} (layer={args.layer})")
             print(f"out_dem_clipped: {stats.out_dem_clipped}")
+            if stats.out_tc_grid:
+                print(f"out_tc_grid: {stats.out_tc_grid}")
+            if stats.out_cba_grid:
+                print(f"out_cba_grid: {stats.out_cba_grid}")
             print(
                 f"points: {stats.n_points}, "
                 f"z_missing_before: {stats.z_missing_before}, "
                 f"z_filled_from_dem: {stats.z_filled_from_dem}, "
                 f"z_missing_after: {stats.z_missing_after}"
             )
-            print(
-                f"bouguer_density_kgm3: {stats.bouguer_density_kgm3}, "
-                f"terrain_density_kgm3: {stats.terrain_density_kgm3}, "
-                f"outer_radius_m: {stats.outer_radius_m}"
-            )
+
             return 0
 
         # ---- section stub
