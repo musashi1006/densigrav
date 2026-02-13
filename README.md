@@ -1,39 +1,42 @@
 # densigrav (v0.1)
+
 Gravity anomaly preprocessing focused on **DEM-based terrain correction** and a smooth **QGIS-first** workflow.
 
-v0.1 (Issue01〜05) の到達点：
-- `project.yaml` のスキーマ検証（typo検出を重視：`extra=forbid`）
-- 点データ（CSV/GPKG）→標準化GPKG出力
-- DEMのAOIクリップ＋点への標高（z）補完
-- **Bouguer anomaly + DEM → terrain correction (TC) → complete Bouguer anomaly (CBA)** を点GPKGに出力
+v0.1 (Issues 01–05) delivers:
+- `project.yaml` schema validation (typo detection; `extra=forbid`)
+- Gravity points (CSV/GPKG) → standardized GeoPackage output
+- DEM AOI clipping + elevation (`z`) completion for points
+- **Bouguer anomaly + DEM → terrain correction (TC) → complete Bouguer anomaly (CBA)** exported as a point GeoPackage
 
 ---
 
-## Requirements / 注意（重要）
-### CRS（座標系）
-v0.1 は **投影座標系（メートル）** 前提です（UTMなど）。
-- `project.crs` が地理座標（例：EPSG:4326）のままだと、距離（m）パラメータ（`outer_radius_m`, `resolution_m` など）が破綻するため、処理を停止します。
-- まず QGIS 等で点データとDEMを同じ投影CRSへ再投影してから使ってください。
+## Requirements / Notes (Important)
 
-**おすすめの選び方（手動）：**
-- 日本付近：JGD2011 / 平面直角座標系、または UTM
-- 世界一般：UTM（点群の中心経度からゾーンを選ぶ）
+### CRS (Coordinate Reference System)
+v0.1 assumes a **projected CRS in meters** (e.g., UTM).
+- If `project.crs` is geographic (e.g., EPSG:4326), distance-based parameters in meters (e.g., `outer_radius_m`, `resolution_m`) become invalid, so densigrav will stop with an error.
+- Reproject both the point data and the DEM to the same projected CRS (meters) using QGIS (or other GIS tools) before running densigrav.
+
+**Recommended choices (manual):**
+- Around Japan: JGD2011 / Japan Plane Rectangular CS, or UTM
+- Global: UTM (choose the zone from the longitude of the point set’s centroid)
 
 ---
 
 ## Install
-開発インストール（推奨）：
+
+Development install (recommended):
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
 
-# v0.1で必要な一式（lint/test + vector + raster + gravity）
+# Everything needed for v0.1 (lint/test + vector + raster + gravity)
 python -m pip install -e ".[dev,geo,raster,grav]"
 ```
 
-依存の確認：
+Verify dependencies:
 
 ```bash
 python -c "import geopandas, rasterio, harmonica; print('ok')"
@@ -43,15 +46,15 @@ python -c "import geopandas, rasterio, harmonica; print('ok')"
 
 ## Quickstart
 
-### 1) `project.yaml` を用意
+### 1) Prepare `project.yaml`
 
-最小例（v0.1）：
+Minimal example (v0.1):
 
 ```yaml
 project:
   name: "demo"
-  crs: "EPSG:6677"        # 投影CRS（m）
-  gravity_unit: "mGal"    # 入力の重力値の単位
+  crs: "EPSG:6677"        # projected CRS (meters)
+  gravity_unit: "mGal"    # unit of input gravity values
   length_unit: "m"
 
 paths:
@@ -66,7 +69,7 @@ inputs:
     columns:
       x: "E"
       y: "N"
-      z: "elev_m"          # 無ければ省略可（DEMから補完）
+      z: "elev_m"          # optional (filled from DEM if omitted or missing)
       value: "bouguer_mgal"
       sigma: "sigma_mgal"
   dem:
@@ -95,75 +98,75 @@ step1_preprocess:
       tc_grid: "cache/terrain_correction.tif"
 ```
 
-### 2) project の検証
+### 2) Validate the project
 
 ```bash
 densigrav project validate project.yaml
-# 入力ファイルの存在も確認する場合：
+# To also check whether input files exist:
 densigrav project validate project.yaml --check-exists
 ```
 
-### 3) Step1（前処理）：BA + DEM → TC → CBA（点出力）
+### 3) Step 1 (Preprocess): BA + DEM → TC → CBA (point output)
 
 ```bash
 densigrav preprocess project.yaml --overwrite
 ```
 
-生成物（デフォルト）：
+Outputs (default):
 
-* `cache/preprocessed_points.gpkg`（layer: `gravity_points`）
+* `cache/preprocessed_points.gpkg` (layer: `gravity_points`)
 
-主な追加列：
+Main added columns:
 
-* `slab_mgal`（ブーゲースラブ）
-* `terrain_effect_mgal`（DEMプリズムの地形効果）
-* `tc_mgal`（terrain correction = slab - terrain_effect）
-* `cba_mgal`（complete Bouguer anomaly = bouguer + tc）
+* `slab_mgal` (Bouguer slab attraction)
+* `terrain_effect_mgal` (terrain effect computed from DEM prisms)
+* `tc_mgal` (terrain correction = slab - terrain_effect)
+* `cba_mgal` (complete Bouguer anomaly = bouguer + tc)
 
 ---
 
 ## Optional utilities (v0.1)
 
-### points ingest（点データを標準化してGPKGへ）
+### points ingest (standardize points to GeoPackage)
 
-CSV/GPKGを読み、列マッピングと単位変換を行ってGPKGを作ります。
+Reads CSV/GPKG, applies column mapping and unit conversion, and writes a standardized GeoPackage.
 
 ```bash
 densigrav points ingest project.yaml --overwrite
-# 出力（デフォルト）：cache/gravity_points.gpkg
+# Output (default): cache/gravity_points.gpkg
 ```
 
-### dem prepare（DEMのAOIクリップ＋z補完）
+### dem prepare (clip DEM AOI + fill z)
 
-点のbbox＋bufferでDEMをクリップし、zが欠損の点をDEMから補完します。
+Clips the DEM by point bbox + buffer and fills missing point elevations (`z`) from the DEM.
 
 ```bash
 densigrav dem prepare project.yaml --overwrite
-# 出力（デフォルト）：
+# Outputs (default):
 # - cache/dem_clipped.tif
 # - cache/points_with_z.gpkg
 ```
 
 ---
 
-## QGISでの閲覧（v0.1）
+## Viewing in QGIS (v0.1)
 
-1. `cache/preprocessed_points.gpkg` を Add Vector Layer で読み込む
-2. `cba_mgal` / `tc_mgal` をスタイルで可視化
-3. 断面や沿線抽出は v0.1 以降（Step2）で拡張予定
+1. Load `cache/preprocessed_points.gpkg` via **Add Vector Layer**
+2. Style by `cba_mgal` / `tc_mgal`
+3. Section tools / along-line extraction will be added after v0.1 (Step 2)
 
 ---
 
 ## Troubleshooting
 
-### `Extra inputs are not permitted` が出る
+### `Extra inputs are not permitted`
 
-`project.yaml` に **スキーマに存在しないキー**が入っています（typo検出のため `extra=forbid`）。
-例：`step1_preprocess.outputs.dem_clipped` は v0.1 スキーマに無いので削除してください。
+Your `project.yaml` contains **keys that are not defined in the schema** (densigrav uses `extra=forbid` to catch typos).
+Example: remove `step1_preprocess.outputs.dem_clipped` because it does not exist in the v0.1 schema.
 
-### `CRS must be projected` が出る
+### `CRS must be projected`
 
-EPSG:4326 など地理座標のままです。点とDEMを投影CRS（メートル）へ再投影してください。
+You are using a geographic CRS (e.g., EPSG:4326). Reproject both points and DEM to a projected CRS (meters).
 
 ---
 
