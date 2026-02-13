@@ -48,6 +48,13 @@ grav = [
   "harmonica>=0.7.0",
   "xarray>=2023.0",
 ]
+grid = [
+  "verde>=1.8.0",
+  "scipy>=1.10",
+]
+viz = [
+  "matplotlib>=3.8",
+]
 
 [project.scripts]
 densigrav = "densigrav.cli:main"

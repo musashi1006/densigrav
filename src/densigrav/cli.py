@@ -5,6 +5,13 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+
+from densigrav.section.profile import extract_section_profile
+from densigrav.section.talwani2d import talwani_gz_polygon
+from densigrav.section.talwani_io import load_talwani_model, save_talwani_model
+from densigrav.section.talwani_quickinv import quick_invert_trapezoid
+
 from . import __version__
 from .io.dem import (
     DemIOError,
@@ -26,6 +33,51 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="store_true", help="Show version and exit")
 
     sub = p.add_subparsers(dest="command")
+
+    p_section = sub.add_parser("section", help="Step2: section tools (profile + 2D Talwani)")
+    sp_section = p_section.add_subparsers(dest="section_cmd", required=True)
+    # section extract
+
+    p_se = sp_section.add_parser(
+        "extract", help="Extract along-line profile from preprocessed points"
+    )
+    p_se.add_argument("project", type=Path, help="project.yaml")
+    p_se.add_argument("--line", type=Path, required=True, help="Line file (GPKG/GeoJSON/SHP)")
+    p_se.add_argument("--layer", type=str, default=None, help="Layer name (for GPKG)")
+    p_se.add_argument("--no-plot", action="store_true", help="Do not generate profile.png")
+    p_se.add_argument("--overwrite", action="store_true")
+
+    # section talwani forward
+    p_tf = sp_section.add_parser("talwani-forward", help="2D Talwani forward on a profile.csv")
+    p_tf.add_argument(
+        "--profile", type=Path, required=True, help="profile.csv (from section extract)"
+    )
+    p_tf.add_argument("--model", type=Path, required=True, help="talwani model yaml")
+    p_tf.add_argument(
+        "--value-col",
+        type=str,
+        default=None,
+        help="Column to fit/compare (default: residual_mgal if present else cba_mgal)",
+    )
+    p_tf.add_argument("--use-elev", action="store_true", help="Use -elev_m as z_obs (else 0)")
+    p_tf.add_argument("--out", type=Path, required=True, help="Output csv (predicted)")
+    p_tf.add_argument("--overwrite", action="store_true")
+
+    # section talwani quick-invert
+    p_ti = sp_section.add_parser(
+        "talwani-invert", help="Quick inversion (single trapezoid) -> model yaml"
+    )
+    p_ti.add_argument("--profile", type=Path, required=True, help="profile.csv")
+    p_ti.add_argument(
+        "--value-col",
+        type=str,
+        default=None,
+        help="Column to fit (default: residual_mgal if present else cba_mgal)",
+    )
+    p_ti.add_argument("--use-elev", action="store_true", help="Use -elev_m as z_obs (else 0)")
+    p_ti.add_argument("--drho", type=float, default=300.0, help="Density contrast (kg/m^3), fixed")
+    p_ti.add_argument("--out-model", type=Path, required=True, help="Output model yaml")
+    p_ti.add_argument("--overwrite", action="store_true")
 
     # project
     project_p = sub.add_parser("project", help="Project utilities")
@@ -132,9 +184,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--out-points", type=str, default=None, help="Override output points gpkg path"
     )
 
-    # section (later)
-    sub.add_parser("section", help="Extract section and run 2D tools [stub]")
-
     return p
 
 
@@ -154,6 +203,28 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    def _auto_value_col(df, requested: Optional[str]) -> str:
+        """
+        If requested is None:
+          1) use residual_mgal if present
+          2) else use cba_mgal if present
+          3) else raise
+        If requested is not None:
+          validate it exists
+        """
+        if requested is None:
+            if "residual_mgal" in df.columns:
+                return "residual_mgal"
+            if "cba_mgal" in df.columns:
+                return "cba_mgal"
+            raise ValueError(
+                "No suitable value column found in profile.csv. "
+                "Expected residual_mgal or cba_mgal, or specify --value-col explicitly."
+            )
+        if requested not in df.columns:
+            raise ValueError(f"value-col not found: {requested}")
+        return requested
 
     if args.version:
         print(f"densigrav {__version__}")
@@ -374,13 +445,89 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
             return 0
 
-        # ---- section stub
+        # ---- section
         if args.command == "section":
-            print("[stub] section is not implemented yet.")
-            return 0
+            if args.section_cmd == "extract":
+                out = extract_section_profile(
+                    args.project,
+                    args.line,
+                    line_layer=args.layer,
+                    overwrite=bool(args.overwrite),
+                    make_plot=not bool(args.no_plot),
+                )
+                print("OK: section profile extracted")
+                print(f"out_dir: {out.out_dir}")
+                print(f"section_points: {out.points_gpkg} (layer=section_points)")
+                print(f"profile_csv: {out.profile_csv}")
+                if out.profile_png:
+                    print(f"profile_png: {out.profile_png}")
+                return 0
+
+            if args.section_cmd == "talwani-forward":
+                import pandas as pd
+
+                if args.out.exists() and not args.overwrite:
+                    raise FileExistsError(f"Output exists (use --overwrite): {args.out}")
+
+                df = pd.read_csv(args.profile)
+                value_col = _auto_value_col(df, args.value_col)
+
+                x = df["dist_m"].to_numpy(dtype=float)
+                z = np.zeros_like(x)
+                if args.use_elev:
+                    if "elev_m" not in df.columns:
+                        raise ValueError("--use-elev requires elev_m column in profile.csv")
+                    z = -df["elev_m"].to_numpy(dtype=float)
+
+                model = load_talwani_model(args.model)
+                pred = talwani_gz_polygon(x, z, model.vertices_xz_m, model.density_contrast_kgm3)
+
+                out = df.copy()
+                out["talwani_pred_mgal"] = pred
+                out["talwani_resid_mgal"] = out["talwani_pred_mgal"] - out[value_col]
+                args.out.parent.mkdir(parents=True, exist_ok=True)
+                out.to_csv(args.out, index=False)
+
+                print("OK: talwani forward")
+                print(f"value_col: {value_col}")
+                print(f"out: {args.out}")
+                return 0
+
+            if args.section_cmd == "talwani-invert":
+                import pandas as pd
+
+                if args.out_model.exists() and not args.overwrite:
+                    raise FileExistsError(f"Output exists (use --overwrite): {args.out_model}")
+
+                df = pd.read_csv(args.profile)
+                value_col = _auto_value_col(df, args.value_col)
+
+                x = df["dist_m"].to_numpy(dtype=float)
+                y = df[value_col].to_numpy(dtype=float)
+                z = np.zeros_like(x)
+                if args.use_elev:
+                    if "elev_m" not in df.columns:
+                        raise ValueError("--use-elev requires elev_m column in profile.csv")
+                    z = -df["elev_m"].to_numpy(dtype=float)
+
+                model, stats = quick_invert_trapezoid(
+                    x,
+                    y,
+                    z_obs_m=z,
+                    density_contrast_kgm3=float(args.drho),
+                )
+                save_talwani_model(args.out_model, model)
+
+                print("OK: talwani quick inversion (trapezoid)")
+                print(f"value_col: {value_col}")
+                print(f"out_model: {args.out_model}")
+                print(f"rmse_mgal: {stats['rmse_mgal']:.4f}, nfev: {int(stats['nfev'])}")
+                return 0
 
         parser.print_help()
         return 0
+
+        # ----
 
     except (ProjectValidationError, PointsIOError, DemIOError, PreprocessError) as e:
         print(str(e), file=sys.stderr)
