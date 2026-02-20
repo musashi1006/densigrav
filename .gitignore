@@ -210,3 +210,7 @@ __marimo__/
 .DS_Store
 cache/
 results/
+
+# debug / local outputs
+results/
+scratch/
