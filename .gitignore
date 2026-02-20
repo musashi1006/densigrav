@@ -208,3 +208,5 @@ __marimo__/
 
 # OS
 .DS_Store
+cache/
+results/
