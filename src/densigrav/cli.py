@@ -7,6 +7,8 @@ from typing import Optional
 
 import numpy as np
 
+from densigrav.section.ensemble import run_ensemble
+from densigrav.section.plotting import plot_section_model
 from densigrav.section.profile import extract_section_profile
 from densigrav.section.talwani2d import talwani_gz_polygon
 from densigrav.section.talwani_io import load_talwani_model, save_talwani_model
@@ -78,6 +80,65 @@ def build_parser() -> argparse.ArgumentParser:
     p_ti.add_argument("--drho", type=float, default=300.0, help="Density contrast (kg/m^3), fixed")
     p_ti.add_argument("--out-model", type=Path, required=True, help="Output model yaml")
     p_ti.add_argument("--overwrite", action="store_true")
+
+    # section plot (publication figure)
+    p_pl = sp_section.add_parser(
+        "plot", help="Publication 2D section figure (gravity fit + density model)"
+    )
+    p_pl.add_argument(
+        "--profile", type=Path, required=True, help="profile.csv (from section extract)"
+    )
+    p_pl.add_argument("--model", type=Path, required=True, help="talwani model yaml")
+    p_pl.add_argument(
+        "--out", type=Path, required=True, help="Output image (png; pdf is also written)"
+    )
+    p_pl.add_argument(
+        "--value-col", type=str, default="residual_mgal", help="Observed gravity column"
+    )
+    p_pl.add_argument("--section-name", type=str, default="Section")
+    p_pl.add_argument(
+        "--exclude-dist",
+        type=float,
+        nargs="*",
+        default=[],
+        help="dist_m value(s) to flag as excluded outliers",
+    )
+    p_pl.add_argument("--exclude-tol", type=float, default=2.0, help="match tolerance (m)")
+    p_pl.add_argument(
+        "--use-elev",
+        action="store_true",
+        help="Use -elev_m as observation height (else sea level z=0)",
+    )
+    p_pl.add_argument(
+        "--equal-aspect",
+        action="store_true",
+        help="1:1 aspect (no vertical exaggeration) for the model panel",
+    )
+
+    # section ensemble (uncertainty figure)
+    p_en = sp_section.add_parser(
+        "ensemble", help="Acceptable-model ensemble + uncertainty figure (non-uniqueness)"
+    )
+    p_en.add_argument("--profile", type=Path, required=True, help="profile.csv")
+    p_en.add_argument(
+        "--model", type=Path, required=True, help="talwani model yaml (best-fit body)"
+    )
+    p_en.add_argument(
+        "--out", type=Path, required=True, help="Output image (png; pdf + params csv also written)"
+    )
+    p_en.add_argument("--value-col", type=str, default="residual_mgal")
+    p_en.add_argument("--section-name", type=str, default="Section")
+    p_en.add_argument("--exclude-dist", type=float, nargs="*", default=[])
+    p_en.add_argument("--exclude-tol", type=float, default=2.0)
+    p_en.add_argument("--sigma", type=float, default=0.8, help="data noise std (mGal)")
+    p_en.add_argument("--n", type=int, default=400, help="ensemble size (draws)")
+    p_en.add_argument(
+        "--accept-factor",
+        type=float,
+        default=1.2,
+        help="keep models with RMS(obs) <= factor * best RMS",
+    )
+    p_en.add_argument("--seed", type=int, default=0)
 
     # project
     project_p = sub.add_parser("project", help="Project utilities")
@@ -542,6 +603,54 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print(f"value_col: {value_col}")
                 print(f"out_model: {args.out_model}")
                 print(f"rmse_mgal: {stats['rmse_mgal']:.4f}, nfev: {int(stats['nfev'])}")
+                return 0
+
+            if args.section_cmd == "plot":
+                stats = plot_section_model(
+                    args.model,
+                    args.profile,
+                    args.out,
+                    value_col=args.value_col,
+                    section_name=args.section_name,
+                    exclude_dist=args.exclude_dist,
+                    exclude_tol=args.exclude_tol,
+                    obs_height="elev" if args.use_elev else "sealevel",
+                    equal_aspect=bool(args.equal_aspect),
+                )
+                print("OK: section figure")
+                print(f"out: {stats['out']}")
+                print(f"pdf: {stats['pdf']}")
+                print(
+                    f"RMS={stats['rms_mgal']:.3f} mGal, "
+                    f"variance_reduction={stats['variance_reduction_pct']:.1f}%, N={stats['n']}"
+                )
+                return 0
+
+            if args.section_cmd == "ensemble":
+                s = run_ensemble(
+                    args.model,
+                    args.profile,
+                    args.out,
+                    value_col=args.value_col,
+                    section_name=args.section_name,
+                    exclude_dist=args.exclude_dist,
+                    exclude_tol=args.exclude_tol,
+                    sigma=args.sigma,
+                    n=args.n,
+                    accept_factor=args.accept_factor,
+                    seed=args.seed,
+                )
+                print("OK: section ensemble")
+                print(f"out: {s['out']}")
+                print(f"pdf: {s['pdf']}")
+                print(f"params_csv: {s['params_csv']}")
+                print(
+                    f"accepted={s['n_accepted']}/{s['n_draws']}, "
+                    f"best RMS={s['best_rms_mgal']:.2f} mGal, VR={s['variance_reduction_pct']:.0f}%"
+                )
+                bd, cx = s["base_depth_m"], s["center_x0_m"]
+                print(f"base depth = {bd[0]:.0f} m [{bd[1]:.0f}, {bd[2]:.0f}] (5-95%)")
+                print(f"center x0  = {cx[0]:.0f} m [{cx[1]:.0f}, {cx[2]:.0f}] (5-95%)")
                 return 0
 
         parser.print_help()
