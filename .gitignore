@@ -209,8 +209,29 @@ __marimo__/
 # OS
 .DS_Store
 cache/
-results/
 
 # debug / local outputs
 results/
 scratch/
+
+# GDAL / QGIS sidecar & auxiliary files (auto-generated, not source data)
+*.aux.xml
+*.tif.ovr
+*.qgz~
+*.gpkg-shm
+*.gpkg-wal
+
+# Claude Code (すべてローカル運用。公開リポジトリには含めない)
+.claude/
+CLAUDE.md
+
+# progress management (local project management, not part of the published research)
+PROGRESS.md
+PLAN.md
+
+# unpublished research data (教授提供データの公開許可・DEM出典の確定まで非公開。
+# 確定後、公開可のファイルから個別に再追加する)
+data/
+
+# unpublished docs (論文アウトライン等。論文受理まで非公開)
+docs/

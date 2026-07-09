@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [
-  { name = "Yoko Koyabu", email = "yoko.koyabu@gmail.com" }
+  { name = "musashi1006" }
 ]
 keywords = ["geophysics", "gravity", "bouguer", "terrain-correction", "qgis"]
 classifiers = [
