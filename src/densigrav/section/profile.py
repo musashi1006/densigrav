@@ -164,7 +164,7 @@ def extract_section_profile(
     dist_m, xs, ys = _sample_line_points(line, interval_m=interval)
     stations = gpd.GeoDataFrame(
         {"dist_m": dist_m, "E": xs, "N": ys},
-        geometry=[Point(x, y) for x, y in zip(xs, ys, strict=True)],
+        geometry=[Point(x, y) for x, y in zip(xs, ys)],  # zip(strict=) needs py3.10
         crs=project_crs or None,
     )
 

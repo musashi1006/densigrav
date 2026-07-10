@@ -183,7 +183,13 @@ def run_ensemble(
     for k in range(n_acc):
         inside += MplPath(trapezoid(*params[k])).contains_points(pts)
     prob = (inside / n_acc).reshape(GX.shape)
-    prob_masked = np.ma.masked_less(prob, 0.05)
+    # mask where gravity data provide no constraint (outside station coverage):
+    # there the ensemble is bounded only by the parameter priors, and painting
+    # it would contradict the "no data" shading
+    x_data_lo, x_data_hi = float(xk.min()), float(xk.max())
+    outside = (GX < x_data_lo) | (GX > x_data_hi)
+    prob_masked = np.ma.masked_where((prob < 0.05) | outside, prob)
+    prob_contour = np.ma.masked_where(outside, prob)
 
     # ---------------- figure ----------------
     plt.rcParams.update({"font.size": 10, "axes.linewidth": 0.8})
@@ -230,7 +236,6 @@ def run_ensemble(
     axg.axhline(0.0, color="0.6", lw=0.8)
     axg.set_ylabel("Residual Bouguer\nanomaly (mGal)")
     axg.grid(alpha=0.25)
-    x_data_lo, x_data_hi = float(xk.min()), float(xk.max())
     shade_no_data((axg, axm), x_lo, x_hi, x_data_lo, x_data_hi, label_ax=axg)
     axg.legend(loc="upper left", fontsize=7.5, framealpha=0.92)
     drho_note = (
@@ -267,7 +272,7 @@ def run_ensemble(
     cs = axm.contour(
         GX * KM,
         GZ * KM,
-        prob,
+        prob_contour,
         levels=[0.25, 0.5, 0.75],
         colors="#7b241c",
         linewidths=[0.6, 0.9, 0.6],

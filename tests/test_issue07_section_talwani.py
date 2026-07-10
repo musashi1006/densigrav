@@ -31,7 +31,7 @@ def test_issue07_section_extract(tmp_path: Path):
             "tc_mgal": tc,
             "residual_mgal": cba,  # for test
         },
-        geometry=[Point(float(x), float(y)) for x, y in zip(E, N, strict=True)],
+        geometry=[Point(float(x), float(y)) for x, y in zip(E, N)],
         crs=crs,
     )
     pp = tmp_path / "cache" / "preprocessed_points.gpkg"
