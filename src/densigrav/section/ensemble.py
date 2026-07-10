@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .plotting import load_model
+from .plotting import load_model, outline_with_data_extent, shade_no_data
 from .talwani2d import talwani_gz_polygon
 
 KM = 1e-3
@@ -48,11 +48,19 @@ def run_ensemble(
     exclude_dist: Iterable[float] = (),
     exclude_tol: float = 2.0,
     sigma: float = 0.8,
+    drho_sigma: float = 0.0,
     n: int = 400,
     accept_factor: float = 1.2,
     seed: int = 0,
+    obs_height: str = "elev",
+    equal_aspect: bool = True,
 ) -> dict:
-    """Run the ensemble, render the uncertainty figure, and write the parameter CSV."""
+    """Run the ensemble, render the uncertainty figure, and write the parameter CSV.
+
+    With ``obs_height="elev"`` (default) stations are evaluated at their real
+    height (z_obs = -elev_m; z is positive down), consistent with
+    ``plot_section_model``; ``"sealevel"`` evaluates every station at z=0.
+    """
     import matplotlib
 
     matplotlib.use("Agg")
@@ -69,12 +77,21 @@ def run_ensemble(
     obs = df[value_col].to_numpy(dtype=float)
     elev = df["elev_m"].to_numpy(dtype=float) if "elev_m" in df.columns else np.zeros_like(dist)
 
+    if obs_height not in ("elev", "sealevel"):
+        raise ValueError("obs_height must be 'elev' or 'sealevel'")
+    if obs_height == "elev" and "elev_m" not in df.columns:
+        raise ValueError(
+            "obs_height='elev' requires an elev_m column in profile.csv "
+            "(pass obs_height='sealevel' / --no-use-elev to model observations at z=0)"
+        )
+
     excl = np.zeros(len(dist), dtype=bool)
     for xd in exclude_dist:
         excl |= np.abs(dist - xd) <= exclude_tol
     keep = ~excl
     xk, yk = dist[keep], obs[keep]
-    zk = np.zeros_like(xk)
+    # stations observe at their real height (z is positive down, so z_obs = -elev)
+    zk = (-elev[keep]) if obs_height == "elev" else np.zeros_like(xk)
 
     # parameter bounds (geological priors): top fixed at sea level (z=0)
     xmin, xmax = float(dist.min()), float(dist.max())
@@ -105,37 +122,50 @@ def run_ensemble(
     p0_best = best_p.copy()
 
     raw = np.empty((n, 4))
+    raw_drho = np.empty(n)
     rms_obs = np.empty(n)
     for k in range(n):
         yp = yk + rng.normal(0.0, sigma, size=yk.shape)
+        # propagate measured density-contrast uncertainty (petrophysical 1-sigma)
+        drho_k = drho if drho_sigma <= 0 else max(10.0, drho + rng.normal(0.0, drho_sigma))
+        raw_drho[k] = drho_k
         start = np.clip(p0_best * (1.0 + rng.normal(0.0, 0.25, size=4)), lo, hi)
         try:
-            raw[k] = _fit_trapezoid(least_squares, xk, yp, zk, drho, start, lo, hi)
+            raw[k] = _fit_trapezoid(least_squares, xk, yp, zk, drho_k, start, lo, hi)
         except Exception:
             raw[k] = best_p
-        rms_obs[k] = _rms(raw[k])
+        rms_obs[k] = float(
+            np.sqrt(np.mean((yk - talwani_gz_polygon(xk, zk, trapezoid(*raw[k]), drho_k)) ** 2))
+        )
 
     accepted = rms_obs <= accept_factor * best_rms
     params = raw[accepted]
+    drhos = raw_drho[accepted]
     n_acc = int(accepted.sum())
     if n_acc < 10:
         raise ValueError(f"Too few acceptable models ({n_acc}); loosen accept_factor or raise n")
 
     out.parent.mkdir(parents=True, exist_ok=True)
     ens_csv = out.parent / (out.stem + "_params.csv")
-    pd.DataFrame(
+    df_out = pd.DataFrame(
         params, columns=["x0_m", "halfwidth_top_m", "halfwidth_base_m", "base_depth_m"]
-    ).to_csv(ens_csv, index=False)
+    )
+    df_out["drho_kgm3"] = drhos
+    df_out.to_csv(ens_csv, index=False)
 
     # predictive gravity envelope on a dense grid
     xpad = 0.04 * (dist.max() - dist.min())
     x_lo = min(dist.min(), best_verts[:, 0].min()) - xpad
     x_hi = max(dist.max(), best_verts[:, 0].max()) + xpad
     xd = np.linspace(x_lo, x_hi, 400)
-    zd = np.zeros_like(xd)
+    if obs_height == "elev":
+        o = np.argsort(dist)
+        zd = -np.interp(xd, dist[o], elev[o])
+    else:
+        zd = np.zeros_like(xd)
     curves = np.empty((n_acc, xd.size))
     for k in range(n_acc):
-        curves[k] = talwani_gz_polygon(xd, zd, trapezoid(*params[k]), drho)
+        curves[k] = talwani_gz_polygon(xd, zd, trapezoid(*params[k]), drhos[k])
     q05, q95 = np.percentile(curves, [5, 95], axis=0)
     best_curve = talwani_gz_polygon(xd, zd, trapezoid(*best_p), drho)
 
@@ -157,8 +187,12 @@ def run_ensemble(
 
     # ---------------- figure ----------------
     plt.rcParams.update({"font.size": 10, "axes.linewidth": 0.8})
+    if equal_aspect:
+        figsize, ratios = (7.9, 5.0), [1.0, 0.7]
+    else:
+        figsize, ratios = (7.5, 6.6), [1.0, 1.5]
     fig, (axg, axm) = plt.subplots(
-        2, 1, figsize=(7.5, 6.6), sharex=True, gridspec_kw={"height_ratios": [1.0, 1.5]}
+        2, 1, figsize=figsize, sharex=True, gridspec_kw={"height_ratios": ratios}
     )
 
     axg.fill_between(
@@ -196,9 +230,16 @@ def run_ensemble(
     axg.axhline(0.0, color="0.6", lw=0.8)
     axg.set_ylabel("Residual Bouguer\nanomaly (mGal)")
     axg.grid(alpha=0.25)
+    x_data_lo, x_data_hi = float(xk.min()), float(xk.max())
+    shade_no_data((axg, axm), x_lo, x_hi, x_data_lo, x_data_hi, label_ax=axg)
     axg.legend(loc="upper left", fontsize=7.5, framealpha=0.92)
+    drho_note = (
+        f"$\\Delta\\rho$ = {drho:+.0f} $\\pm$ {drho_sigma:.0f} kg m$^{{-3}}$ (measured)"
+        if drho_sigma > 0
+        else f"$\\Delta\\rho$ = {drho:+.0f} kg m$^{{-3}}$ (fixed)"
+    )
     stats = (
-        f"$\\Delta\\rho$ = {drho:+.0f} kg m$^{{-3}}$ (fixed)\n"
+        f"{drho_note}\n"
         f"RMS misfit = {rms:.2f} mGal\n"
         f"Variance reduction = {vr:.0f}%\n"
         f"noise $\\sigma$ = {sigma:.1f} mGal,  N = {int(keep.sum())}"
@@ -234,9 +275,11 @@ def run_ensemble(
         zorder=4,
     )
     axm.clabel(cs, fmt={0.25: "25%", 0.5: "50%", 0.75: "75%"}, fontsize=6.5, inline=True)
-    axm.plot(
-        np.append(best_verts[:, 0], best_verts[0, 0]) * KM,
-        np.append(best_verts[:, 1], best_verts[0, 1]) * KM,
+    outline_with_data_extent(
+        axm,
+        best_verts,
+        x_data_lo,
+        x_data_hi,
         color="#1b2631",
         lw=1.8,
         zorder=5,
@@ -252,22 +295,40 @@ def run_ensemble(
     emax = float(elev.max()) * KM
     axm.set_ylim(-(emax * 1.5 + 0.05), zb_hi * KM)
     axm.invert_yaxis()
+    if (x_hi - x_data_hi) * KM > 0.4:
+        axm.text(
+            0.5 * (x_data_hi + x_hi) * KM,
+            0.5 * zb_hi * KM,
+            "no data",
+            color="0.35",
+            fontsize=7.5,
+            ha="center",
+            va="center",
+            style="italic",
+            zorder=7,
+        )
     axm.legend(loc="lower left", fontsize=7.5, framealpha=0.92)
 
     cbar = fig.colorbar(pcm, ax=axm, pad=0.012, fraction=0.045)
     cbar.set_label("Model support\nP(inside body)", fontsize=8)
     cbar.ax.tick_params(labelsize=7.5)
 
-    bbox = axm.get_position()
-    w_in = fig.get_figwidth() * bbox.width
-    h_in = fig.get_figheight() * bbox.height
-    dx = (x_hi - x_lo) * KM
-    dz = (zb_hi * KM) + (emax * 1.5 + 0.05)
-    ve = (dz / h_in) / (dx / w_in)
+    if equal_aspect:
+        axm.set_aspect("equal", adjustable="box")
+        ve_note = "no vertical exaggeration (1:1)"
+    else:
+        bbox = axm.get_position()
+        w_in = fig.get_figwidth() * bbox.width
+        h_in = fig.get_figheight() * bbox.height
+        dx = (x_hi - x_lo) * KM
+        dz = (zb_hi * KM) + (emax * 1.5 + 0.05)
+        # VE = horizontal scale / vertical scale (>1 means vertically stretched)
+        ve = (dx / w_in) / (dz / h_in)
+        ve_note = f"vertical exaggeration ≈ {ve:.1f}×"
     axm.text(
         0.985,
-        0.04,
-        f"vertical exaggeration ≈ {ve:.1f}×",
+        0.06,
+        ve_note,
         transform=axm.transAxes,
         ha="right",
         va="bottom",
@@ -304,4 +365,9 @@ def run_ensemble(
         "base_depth_m": _ci(3),
         "halfwidth_top_m": _ci(1),
         "halfwidth_base_m": _ci(2),
+        "drho_kgm3": (
+            float(np.median(drhos)),
+            float(np.percentile(drhos, 5)),
+            float(np.percentile(drhos, 95)),
+        ),
     }

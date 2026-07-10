@@ -25,9 +25,17 @@ def main() -> None:
     ap.add_argument("--exclude-dist", type=float, nargs="*", default=[])
     ap.add_argument("--exclude-tol", type=float, default=2.0)
     ap.add_argument("--sigma", type=float, default=0.8)
+    ap.add_argument("--drho-sigma", type=float, default=0.0)
     ap.add_argument("--n", type=int, default=400)
     ap.add_argument("--accept-factor", type=float, default=1.2)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--use-elev",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Evaluate stations at z=-elev_m (default). --no-use-elev uses sea level z=0",
+    )
+    ap.add_argument("--no-equal-aspect", action="store_true")
     a = ap.parse_args()
 
     s = run_ensemble(
@@ -39,9 +47,12 @@ def main() -> None:
         exclude_dist=a.exclude_dist,
         exclude_tol=a.exclude_tol,
         sigma=a.sigma,
+        drho_sigma=a.drho_sigma,
         n=a.n,
         accept_factor=a.accept_factor,
         seed=a.seed,
+        obs_height="elev" if a.use_elev else "sealevel",
+        equal_aspect=not a.no_equal_aspect,
     )
     print(f"Saved: {s['out']}")
     print(f"Saved: {s['pdf']}")

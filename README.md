@@ -236,9 +236,10 @@ Density contrast is fixed via `--drho`.
 
 ```bash
 densigrav section talwani-invert \
-  --profile results/2d/section_A/profile.csv \
-  --drho 300 \
-  --out-model results/2d/section_A/fit_model.yaml \
+  --profile results/2d/section_Shinshiro/profile_fit_residual_v3.csv \
+  --drho 78 \
+  --use-elev \
+  --out-model results/talwani/fit_model.yaml \
   --overwrite
 ```
 
@@ -255,10 +256,11 @@ matches the model file.
 ```bash
 densigrav section plot \
   --model results/talwani/model_shinshiro_simple.yaml \
-  --profile results/2d/section_A/profile.csv \
+  --profile results/2d/section_Shinshiro/profile_fit_residual_v3.csv \
   --value-col residual_mgal \
   --section-name "Shinshiro" \
   --exclude-dist 4305.5 \
+  --use-elev \
   --out results/figures/section.png
 ```
 
@@ -271,11 +273,16 @@ plus a 5–95 % predictive envelope of the calculated anomaly:
 ```bash
 densigrav section ensemble \
   --model results/talwani/model_shinshiro_simple.yaml \
-  --profile results/2d/section_A/profile.csv \
+  --profile results/2d/section_Shinshiro/profile_fit_residual_v3.csv \
   --value-col residual_mgal --section-name "Shinshiro" \
-  --exclude-dist 4305.5 --sigma 0.8 --n 600 --accept-factor 1.2 \
+  --exclude-dist 4305.5 --sigma 0.8 --drho-sigma 18 --n 600 --accept-factor 1.2 \
   --out results/figures/section_ensemble.png
 ```
+
+`ensemble` evaluates stations at their surveyed elevation (`z_obs = -elev_m`)
+by default (pass `--no-use-elev` to model every observation at sea level);
+`plot` needs the explicit `--use-elev` flag. `--drho-sigma` propagates the
+1-sigma uncertainty of the measured density contrast into the ensemble.
 
 Both write a sibling `.pdf`; `ensemble` also writes `<out>_params.csv`.
 Requires `matplotlib` (`.[viz]`) and, for `ensemble`, `scipy` (`.[grid]`).

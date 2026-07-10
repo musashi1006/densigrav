@@ -110,9 +110,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use -elev_m as observation height (else sea level z=0)",
     )
     p_pl.add_argument(
-        "--equal-aspect",
+        "--no-equal-aspect",
         action="store_true",
-        help="1:1 aspect (no vertical exaggeration) for the model panel",
+        help="stretch the model panel vertically instead of true-scale 1:1 (default: 1:1)",
     )
 
     # section ensemble (uncertainty figure)
@@ -131,6 +131,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_en.add_argument("--exclude-dist", type=float, nargs="*", default=[])
     p_en.add_argument("--exclude-tol", type=float, default=2.0)
     p_en.add_argument("--sigma", type=float, default=0.8, help="data noise std (mGal)")
+    p_en.add_argument(
+        "--drho-sigma",
+        type=float,
+        default=0.0,
+        help="1-sigma uncertainty of the density contrast (kg/m^3) to propagate "
+        "into the ensemble (e.g. standard error of measured rock densities)",
+    )
     p_en.add_argument("--n", type=int, default=400, help="ensemble size (draws)")
     p_en.add_argument(
         "--accept-factor",
@@ -139,6 +146,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="keep models with RMS(obs) <= factor * best RMS",
     )
     p_en.add_argument("--seed", type=int, default=0)
+    p_en.add_argument(
+        "--use-elev",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Evaluate stations at their real height z=-elev_m (default; requires elev_m "
+        "column). --no-use-elev models every observation at sea level (z=0)",
+    )
+    p_en.add_argument(
+        "--no-equal-aspect",
+        action="store_true",
+        help="stretch the model panel vertically instead of true-scale 1:1 (default: 1:1)",
+    )
 
     # project
     project_p = sub.add_parser("project", help="Project utilities")
@@ -615,7 +634,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     exclude_dist=args.exclude_dist,
                     exclude_tol=args.exclude_tol,
                     obs_height="elev" if args.use_elev else "sealevel",
-                    equal_aspect=bool(args.equal_aspect),
+                    equal_aspect=not args.no_equal_aspect,
                 )
                 print("OK: section figure")
                 print(f"out: {stats['out']}")
@@ -636,9 +655,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                     exclude_dist=args.exclude_dist,
                     exclude_tol=args.exclude_tol,
                     sigma=args.sigma,
+                    drho_sigma=args.drho_sigma,
                     n=args.n,
                     accept_factor=args.accept_factor,
                     seed=args.seed,
+                    obs_height="elev" if args.use_elev else "sealevel",
+                    equal_aspect=not args.no_equal_aspect,
                 )
                 print("OK: section ensemble")
                 print(f"out: {s['out']}")

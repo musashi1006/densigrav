@@ -30,6 +30,51 @@ def load_model(path: Path) -> tuple[float, np.ndarray]:
     return drho, verts
 
 
+def outline_with_data_extent(ax, verts, x_data_lo, x_data_hi, *, color, lw, zorder, label=None):
+    """Draw a polygon outline: solid where covered by data, dashed where not.
+
+    The dashed portions mark geometry that lies outside the gravity coverage
+    and is therefore unconstrained (geological-section convention for
+    inferred boundaries).
+    """
+    vc = np.vstack([verts, verts[:1]])
+    labeled = False
+    for i in range(len(vc) - 1):
+        xs = np.linspace(vc[i, 0], vc[i + 1, 0], 64)
+        zs = np.linspace(vc[i, 1], vc[i + 1, 1], 64)
+        inside = (xs >= x_data_lo) & (xs <= x_data_hi)
+        for mask, ls in ((inside, "-"), (~inside, "--")):
+            if not mask.any():
+                continue
+            lab = label if (label is not None and not labeled and ls == "-") else None
+            if lab is not None:
+                labeled = True
+            ax.plot(
+                np.where(mask, xs, np.nan) * KM,
+                np.where(mask, zs, np.nan) * KM,
+                color=color,
+                lw=lw,
+                ls=ls,
+                zorder=zorder,
+                label=lab,
+            )
+
+
+def shade_no_data(axes, x_lo, x_hi, x_data_lo, x_data_hi, *, label_ax=None):
+    """Grey out the parts of the section without gravity coverage."""
+    for ax in axes:
+        lab = "No gravity data" if ax is label_ax else None
+        if x_data_hi < x_hi:
+            ax.axvspan(
+                x_data_hi * KM, x_hi * KM, color="0.55", alpha=0.13, lw=0, zorder=1.5, label=lab
+            )
+            lab = None
+        if x_lo < x_data_lo:
+            ax.axvspan(
+                x_lo * KM, x_data_lo * KM, color="0.55", alpha=0.13, lw=0, zorder=1.5, label=lab
+            )
+
+
 def plot_section_model(
     model: Path,
     profile: Path,
@@ -40,7 +85,7 @@ def plot_section_model(
     exclude_dist: Iterable[float] = (),
     exclude_tol: float = 2.0,
     obs_height: str = "sealevel",
-    equal_aspect: bool = False,
+    equal_aspect: bool = True,
 ) -> dict:
     """Render the 2-panel section figure (png + sibling pdf). Returns misfit stats."""
     import matplotlib
@@ -76,12 +121,23 @@ def plot_section_model(
     xpad = 0.04 * (dist.max() - dist.min())
     x_lo = min(dist.min(), verts[:, 0].min()) - xpad
     x_hi = max(dist.max(), verts[:, 0].max()) + xpad
+    x_data_lo = float(dist[keep].min())
+    x_data_hi = float(dist[keep].max())
     xd = np.linspace(x_lo, x_hi, 500)
-    pred_dense = talwani_gz_polygon(xd, np.zeros_like(xd), verts, drho)
+    if obs_height == "elev":
+        o = np.argsort(dist)
+        zd = -np.interp(xd, dist[o], elev[o])
+    else:
+        zd = np.zeros_like(xd)
+    pred_dense = talwani_gz_polygon(xd, zd, verts, drho)
 
     plt.rcParams.update({"font.size": 10, "axes.linewidth": 0.8})
+    if equal_aspect:
+        figsize, ratios = (7.5, 4.8), [1.0, 0.7]
+    else:
+        figsize, ratios = (7.5, 6.4), [1.0, 1.5]
     fig, (axg, axm) = plt.subplots(
-        2, 1, figsize=(7.5, 6.4), sharex=True, gridspec_kw={"height_ratios": [1.0, 1.5]}
+        2, 1, figsize=figsize, sharex=True, gridspec_kw={"height_ratios": ratios}
     )
 
     # (top) gravity panel
@@ -110,6 +166,7 @@ def plot_section_model(
     axg.axhline(0.0, color="0.6", lw=0.8)
     axg.set_ylabel("Residual Bouguer\nanomaly (mGal)")
     axg.grid(alpha=0.25)
+    shade_no_data((axg, axm), x_lo, x_hi, x_data_lo, x_data_hi, label_ax=axg)
     axg.legend(loc="upper left", fontsize=8, framealpha=0.92)
     stats = (
         f"$\\Delta\\rho$ = {drho:+.0f} kg m$^{{-3}}$\n"
@@ -142,22 +199,24 @@ def plot_section_model(
         verts[:, 1] * KM,
         facecolor=body_color,
         alpha=0.40,
-        edgecolor=edge_color,
-        linewidth=2.0,
+        edgecolor="none",
         zorder=3,
     )
-    cx = float(verts[:, 0].mean()) * KM
-    cz = float(verts[:, 1].mean()) * KM
-    axm.text(
-        cx,
-        cz,
-        f"$\\Delta\\rho$ = {drho:+.0f}\nkg m$^{{-3}}$",
-        ha="center",
-        va="center",
-        fontsize=9.5,
-        color=edge_color,
-        zorder=6,
-    )
+    outline_with_data_extent(axm, verts, x_data_lo, x_data_hi, color=edge_color, lw=2.0, zorder=4)
+    if not equal_aspect:
+        # in-body label only fits when the panel is vertically stretched
+        cx = float(verts[:, 0].mean()) * KM
+        cz = float(verts[:, 1].mean()) * KM
+        axm.text(
+            cx,
+            cz,
+            f"$\\Delta\\rho$ = {drho:+.0f}\nkg m$^{{-3}}$",
+            ha="center",
+            va="center",
+            fontsize=9.5,
+            color=edge_color,
+            zorder=6,
+        )
     axm.axhline(0.0, color="#34607d", lw=0.9, ls="--", zorder=2)
     axm.text(x_lo * KM, 0.0, " sea level", color="#34607d", fontsize=7.5, va="bottom", ha="left")
 
@@ -170,6 +229,18 @@ def plot_section_model(
     emax = float(elev.max()) * KM
     axm.set_ylim(-(emax * 1.5 + 0.05), zmax * 1.10)
     axm.invert_yaxis()
+    if (x_hi - x_data_hi) * KM > 0.4:
+        axm.text(
+            0.5 * (x_data_hi + x_hi) * KM,
+            0.22 * zmax,
+            "no data",
+            color="0.35",
+            fontsize=7.5,
+            ha="center",
+            va="center",
+            style="italic",
+            zorder=7,
+        )
 
     if equal_aspect:
         axm.set_aspect("equal", adjustable="box")
@@ -180,7 +251,8 @@ def plot_section_model(
         h_in = fig.get_figheight() * bbox.height
         dx = (x_hi - x_lo) * KM
         dz = (zmax * 1.10) + (emax * 1.5 + 0.05)
-        ve = (dz / h_in) / (dx / w_in)
+        # VE = horizontal scale / vertical scale (>1 means vertically stretched)
+        ve = (dx / w_in) / (dz / h_in)
         ve_note = f"vertical exaggeration ≈ {ve:.1f}×"
     axm.text(
         0.985,
