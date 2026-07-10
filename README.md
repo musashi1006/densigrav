@@ -236,7 +236,7 @@ Density contrast is fixed via `--drho`.
 
 ```bash
 densigrav section talwani-invert \
-  --profile results/2d/section_Shinshiro/profile_fit_residual_v3.csv \
+  --profile results/2d/section_Shinshiro/profile_extended_east_v5_maskedreg2.csv \
   --drho 78 \
   --use-elev \
   --out-model results/talwani/fit_model.yaml \
@@ -256,7 +256,7 @@ matches the model file.
 ```bash
 densigrav section plot \
   --model results/talwani/model_shinshiro_simple.yaml \
-  --profile results/2d/section_Shinshiro/profile_fit_residual_v3.csv \
+  --profile results/2d/section_Shinshiro/profile_extended_east_v5_maskedreg2.csv \
   --value-col residual_mgal \
   --section-name "Shinshiro" \
   --exclude-dist 4305.5 \
@@ -273,7 +273,7 @@ plus a 5–95 % predictive envelope of the calculated anomaly:
 ```bash
 densigrav section ensemble \
   --model results/talwani/model_shinshiro_simple.yaml \
-  --profile results/2d/section_Shinshiro/profile_fit_residual_v3.csv \
+  --profile results/2d/section_Shinshiro/profile_extended_east_v5_maskedreg2.csv \
   --value-col residual_mgal --section-name "Shinshiro" \
   --exclude-dist 4305.5 --sigma 0.8 --drho-sigma 18 --n 600 --accept-factor 1.2 \
   --out results/figures/section_ensemble.png
