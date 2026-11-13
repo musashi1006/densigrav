@@ -103,3 +103,71 @@ def test_trapezoid_at_station_heights_matches_brute_force():
     # the height must actually matter: z=0 evaluation differs measurably
     at_sea_level = talwani_gz_polygon(x, np.zeros_like(x), verts, drho)
     assert np.max(np.abs(got - at_sea_level)) > 0.1  # mGal
+
+
+# --- bodies above / straddling the observation height -------------------------
+# Regression guard: the forward used to fold each vertex angle into [0, pi)
+# separately, which is only valid when the whole polygon lies below the
+# observation point. A body reaching above a station (e.g. a trapezoid whose top
+# follows the ground surface, or a sheet above a valley station) then gave wrong
+# values (e.g. -7.3 mGal instead of +0.06 for the trapezoid below).
+
+STRADDLE = np.array([[2000.0, -300.0], [4000.0, -300.0], [3500.0, 800.0], [2500.0, 800.0]])
+
+
+def _inside_straddle(px, pz):
+    f = np.clip((pz + 300.0) / 1100.0, 0, 1)
+    return (pz >= -300.0) & (pz <= 800.0) & (px >= 2000.0 + 500.0 * f) & (px <= 4000.0 - 500.0 * f)
+
+
+def test_body_straddling_station_height_matches_brute_force():
+    """Stations beside a body whose top is above them (oblique edges cross z_obs)."""
+    x = np.array([0.0, 1900.0, 5000.0, 4300.0])
+    z = np.array([-137.0, -137.0, -500.0, 200.0])
+    got = talwani_gz_polygon(x, z, STRADDLE, drho := 78.0)
+    want = brute_gz(x, z, _inside_straddle, (2000.0, 4000.0, -300.0, 800.0), drho, h=2.0)
+    assert np.max(np.abs(got - want)) < 0.005  # mGal
+    assert got[0] > 0  # most of the mass is below the station
+
+
+def test_station_inside_body_matches_brute_force():
+    """Observation point inside the body (integrable 1/r singularity -> looser tolerance)."""
+    x = np.array([3001.3, 3777.7])
+    z = np.array([-137.3, 100.7])
+    got = talwani_gz_polygon(x, z, STRADDLE, drho := 78.0)
+    want = brute_gz(x, z, _inside_straddle, (2000.0, 4000.0, -300.0, 800.0), drho, h=2.0)
+    assert np.max(np.abs(got - want)) < 0.02  # mGal
+
+
+def test_slab_above_station_is_negative_slab_value():
+    """A wide sheet entirely above the station pulls upward: gz -> -2*pi*G*rho*t."""
+    t, drho = 300.0, 78.0
+    verts = np.array([[-1e6, -400.0], [1e6, -400.0], [1e6, -400.0 + t], [-1e6, -400.0 + t]])
+    got = talwani_gz_polygon(np.zeros(1), np.zeros(1), verts, drho)[0]
+    want = -2 * np.pi * G_SI * drho * t * 1e5
+    assert abs(got - want) < 1e-3 * abs(want)
+
+
+def test_split_body_is_additive_across_station_height():
+    """Cutting a body along the station height must not change the total."""
+    drho = 78.0
+    whole = np.array([[2000.0, -300.0], [4000.0, -300.0], [4000.0, 800.0], [2000.0, 800.0]])
+    upper = np.array([[2000.0, -300.0], [4000.0, -300.0], [4000.0, -137.0], [2000.0, -137.0]])
+    lower = np.array([[2000.0, -137.0], [4000.0, -137.0], [4000.0, 800.0], [2000.0, 800.0]])
+    x = np.array([0.0, 1500.0, 3000.0, 4600.0])
+    z = np.full_like(x, -137.0)  # stations exactly at the cut (on the line of a horizontal edge)
+    total = talwani_gz_polygon(x, z, whole, drho)
+    parts = talwani_gz_polygon(x, z, upper, drho) + talwani_gz_polygon(x, z, lower, drho)
+    assert np.max(np.abs(total - parts)) < 1e-9
+    # the upper part alone pulls up, the lower part pulls down
+    assert np.all(talwani_gz_polygon(x, z, upper, drho) < 0)
+    assert np.all(talwani_gz_polygon(x, z, lower, drho) > 0)
+
+
+def test_vertex_order_and_boundary_points_are_finite():
+    drho = 78.0
+    x = np.array([2000.0, 3000.0, 2250.0, 0.0])  # at a vertex, on the top edge, on a wall, outside
+    z = np.array([-300.0, -300.0, 250.0, -137.0])
+    got = talwani_gz_polygon(x, z, STRADDLE, drho)
+    assert np.all(np.isfinite(got))
+    assert np.max(np.abs(got - talwani_gz_polygon(x, z, STRADDLE[::-1], drho))) < 1e-9

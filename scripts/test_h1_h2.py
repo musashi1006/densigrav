@@ -131,16 +131,23 @@ def fit_h1(
         out = talwani_gz_polygon(x, z, sheet(xl, xr, zt, t), drho) - y
         return out + 0.05 * pen
 
-    xl0s = [xl_lo + 500.0, max(xl_lo, xmin)]
-    xr0s = [min(xr_hi, 0.5 * (xmin + xmax)), min(xr_hi, xmax), min(xr_hi, xmax + 2000.0)]
-    zt0s = sorted({np.clip(v, zt_lo, zt_hi) for v in (zt_lo + 50.0, 0.0, 400.0)})
+    # Multi-start grid spanning the whole feasible box, including its corners. The
+    # misfit has several local minima and the best sheet often sits on a bound
+    # (e.g. its western end pinned at the aureole); a grid that only starts near
+    # the western limit misses it and overstates the H1 misfit.
+    xl0s = sorted({float(v) for v in np.linspace(xl_lo, xl_hi, 5)} | {max(xl_lo, xmin)})
+    xr0s = sorted(
+        {float(v) for v in np.linspace(xr_lo, xr_hi, 5)}
+        | {float(np.clip(v, xr_lo, xr_hi)) for v in (0.5 * (xmin + xmax), xmax)}
+    )
+    zt0s = sorted({float(np.clip(v, zt_lo, zt_hi)) for v in (zt_lo, zt_lo + 50.0, 0.0, 400.0)})
     best_p, best_r = None, np.inf
     for xl0 in xl0s:
         for xr0 in xr0s:
             if xr0 - xl0 < 500.0:
                 continue
             for zt0 in zt0s:
-                for t0 in (150.0, 450.0):
+                for t0 in (60.0, 150.0, 450.0):
                     p0 = np.clip(np.array([xl0, xr0, zt0, t0]), lo, hi)
                     try:
                         sol = least_squares(res, p0, bounds=(lo, hi), max_nfev=400).x
