@@ -25,7 +25,7 @@ def main() -> None:
     ap.add_argument("--exclude-dist", type=float, nargs="*", default=[])
     ap.add_argument("--exclude-tol", type=float, default=2.0)
     ap.add_argument("--obs-height", choices=["sealevel", "elev"], default="sealevel")
-    ap.add_argument("--equal-aspect", action="store_true")
+    ap.add_argument("--no-equal-aspect", action="store_true")
     a = ap.parse_args()
 
     s = plot_section_model(
@@ -37,7 +37,7 @@ def main() -> None:
         exclude_dist=a.exclude_dist,
         exclude_tol=a.exclude_tol,
         obs_height=a.obs_height,
-        equal_aspect=a.equal_aspect,
+        equal_aspect=not a.no_equal_aspect,
     )
     print(f"Saved: {s['out']}")
     print(f"Saved: {s['pdf']}")
