@@ -235,3 +235,6 @@ data/
 
 # unpublished docs (論文アウトライン等。論文受理まで非公開)
 docs/
+
+# Obsidian vault settings (local note-taking tool)
+.obsidian/
